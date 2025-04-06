@@ -37,7 +37,7 @@ sudo apt-get install python3-tk
 Клонируйте репозиторий:
 
 ```bash
-git clone https://github.com/your-username/MultiOp.git
+git clone https://github.com/XtremeByteGta/MultiOP.git
 cd MultiOp
 ```
 
