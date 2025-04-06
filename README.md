@@ -38,7 +38,7 @@ sudo apt-get install python3-tk
 
 ```bash
 git clone https://github.com/XtremeByteGta/MultiOP.git
-cd MultiOp
+cd MultiOP
 ```
 
 Или скачайте ZIP-архив с GitHub и распакуйте его вручную.
