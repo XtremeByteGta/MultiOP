@@ -1,4 +1,3 @@
-# MultiOP.py
 import ply.lex as lex
 import ply.yacc as yacc
 
@@ -6,7 +5,7 @@ import ply.yacc as yacc
 tokens = (
     'NUMBER', 'STRING', 'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'EQUALS', 'LET', 'PRINT',
     'LSS', 'GTR', 'EQ', 'AND', 'OR', 'NOT', 'ID', 'LPAREN', 'RPAREN', 'IF', 'WHILE',
-    'DEF', 'COMMA'
+    'DEF', 'COMMA', 'LBRACK', 'RBRACK', 'NEWLINE', 'INDENT', 'DEDENT'
 )
 
 reserved = {'let': 'LET', 'print': 'PRINT', 'and': 'AND', 'or': 'OR', 'not': 'NOT',
@@ -23,6 +22,8 @@ t_EQ = r'=='
 t_LPAREN = r'\('
 t_RPAREN = r'\)'
 t_COMMA = r','
+t_LBRACK = r'\['
+t_RBRACK = r'\]'
 
 def t_ID(t):
     r'[a-zA-Z_][a-zA-Z0-9_]*'
@@ -43,19 +44,49 @@ def t_COMMENT(t):
     r'\#.*'
     pass  # Игнорируем комментарии
 
-t_ignore = ' \t\n'
+def t_NEWLINE(t):
+    r'\n+'
+    t.lexer.lineno += len(t.value)
+    t.lexer.at_line_start = True
+    return t
+
+def t_indent(t):
+    r'[ \t]+'
+    if not t.lexer.at_line_start:
+        return None
+    indent = 0
+    for char in t.value:
+        if char == ' ':
+            indent += 1
+        elif char == '\t':
+            indent += 4  # Предполагаем, что таб = 4 пробела
+    current_indent = t.lexer.indent_level[-1]
+    if indent > current_indent:
+        t.type = 'INDENT'
+        t.value = indent
+        t.lexer.indent_level.append(indent)
+        return t
+    elif indent < current_indent:
+        t.type = 'DEDENT'
+        t.value = indent
+        t.lexer.indent_level.pop()
+        return t
+    return None
+
+t_ignore = ' \t'
 
 def t_error(t):
-    print(f"Illegal character '{t.value[0]}'")
+    print(f"Illegal character '{t.value[0]}' at line {t.lineno}")
     t.lexer.skip(1)
 
 lexer = lex.lex()
+lexer.indent_level = [0]  # Инициализация уровня отступов
+lexer.at_line_start = True  # Флаг начала строки
 
 # --- Парсер ---
 variables = {}
 functions = {}
 
-# Приоритеты операторов для устранения shift/reduce конфликтов
 precedence = (
     ('left', 'OR', 'AND'),
     ('left', 'LSS', 'GTR', 'EQ'),
@@ -65,12 +96,23 @@ precedence = (
 )
 
 def p_program(p):
-    '''program : statement
-               | program statement'''
+    '''program : statement_list'''
+    p[0] = p[1]
+
+def p_statement_list(p):
+    '''statement_list : statement
+                      | statement_list NEWLINE statement
+                      | statement_list NEWLINE'''
     if len(p) == 2:
         p[0] = [p[1]]
+    elif len(p) == 3:
+        p[0] = p[1]  # Игнорируем лишние NEWLINE
     else:
-        p[0] = p[1] + [p[2]]
+        p[0] = p[1] + [p[3]]
+
+def p_block(p):
+    '''block : INDENT statement_list DEDENT'''
+    p[0] = p[2]
 
 def p_statement_let(p):
     'statement : LET ID EQUALS expression'
@@ -81,16 +123,16 @@ def p_statement_print(p):
     p[0] = ('print', p[2])
 
 def p_statement_if(p):
-    'statement : IF expression statement'
-    p[0] = ('if', p[2], p[3])
+    'statement : IF expression NEWLINE block'
+    p[0] = ('if', p[2], p[4])
 
 def p_statement_while(p):
-    'statement : WHILE expression statement'
-    p[0] = ('while', p[2], p[3])
+    'statement : WHILE expression NEWLINE block'
+    p[0] = ('while', p[2], p[4])
 
 def p_statement_def(p):
-    'statement : DEF ID LPAREN id_list RPAREN statement'
-    p[0] = ('def', p[2], p[4], p[6])
+    'statement : DEF ID LPAREN id_list RPAREN NEWLINE block'
+    p[0] = ('def', p[2], p[4], p[7])
 
 def p_statement_call(p):
     'statement : ID LPAREN expr_list RPAREN'
@@ -144,9 +186,19 @@ def p_expression_id(p):
     'expression : ID'
     p[0] = p[1]
 
+def p_expression_list_literal(p):
+    'expression : LBRACK expr_list RBRACK'
+    p[0] = ('list', p[2])
+
+def p_expression_index(p):
+    'expression : expression LBRACK expression RBRACK'
+    p[0] = ('index', p[1], p[3])
+
 def p_error(p):
     if p:
-        print(f"Syntax error at '{p.value}'")
+        print(f"Syntax error at '{p.value}' on line {p.lineno}")
+    else:
+        print("Syntax error at EOF")
 
 parser = yacc.yacc()
 
@@ -186,6 +238,12 @@ def evaluate(expr):
             return evaluate(expr[1]) or evaluate(expr[2])
         elif op == 'not':
             return not evaluate(expr[1])
+        elif op == 'list':
+            return [evaluate(e) for e in expr[1]]
+        elif op == 'index':
+            lst = evaluate(expr[1])
+            idx = evaluate(expr[2])
+            return lst[idx]
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -207,18 +265,18 @@ def execute(code):
             output.append(str(result))
         elif stmt[0] == 'if':
             if evaluate(stmt[1]):
-                result = execute([stmt[2]])
+                result = execute(stmt[2])
                 if isinstance(result, str) and result.startswith("Error"):
                     return result
                 output.extend(result.split('\n'))
         elif stmt[0] == 'while':
             while evaluate(stmt[1]):
-                result = execute([stmt[2]])
+                result = execute(stmt[2])
                 if isinstance(result, str) and result.startswith("Error"):
                     return result
                 output.extend(result.split('\n'))
         elif stmt[0] == 'def':
-            functions[stmt[1]] = (stmt[2], stmt[3])  # Параметры, тело
+            functions[stmt[1]] = (stmt[2], stmt[3])
         elif stmt[0] == 'call':
             fname = stmt[1]
             args = [evaluate(arg) for arg in stmt[2]]
@@ -227,7 +285,7 @@ def execute(code):
                 old_vars = variables.copy()
                 for param, arg in zip(params, args):
                     variables[param] = arg
-                result = execute([body])
+                result = execute(body)
                 variables.clear()
                 variables.update(old_vars)
                 if isinstance(result, str) and result.startswith("Error"):
@@ -238,10 +296,10 @@ def execute(code):
 if __name__ == "__main__":
     code = """
     let x = 5
-    let msg = "Hello"
-    print msg + " world"
+    let lst = [10, 20, 30]
     if x > 0
-        print x
+        print "Positive"
+        print lst[1]
     while x > 0
         print x
         let x = x - 1
